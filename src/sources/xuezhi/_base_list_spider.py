@@ -147,21 +147,37 @@ def _extract_items_from_payload(payload_url, data, entity_type):
 
 
 def _paginate_items(entity_type, template_url, user_agent, referer, max_pages=0):
-    # DEBUG: Return test data
-    test_items = [
-        {
-            'source': 'xuezhi',
-            'entity_type': entity_type,
-            'item_id': f'test_{entity_type}_1',
-            'name': f'测试{entity_type}1',
-            'detail_url': f'https://xz.chsi.com.cn/{entity_type}/detail.action?id=test_{entity_type}_1',
-            'payload_url': template_url,
-            'raw': {'test': True},
-            'collected_at': iso_now(),
-        }
-    ]
-    api_pages = [{'page_no': 1, 'url': template_url, 'count': len(test_items)}]
-    return test_items, api_pages
+    session = _build_session(user_agent=user_agent, referer=referer)
+    first_url = _replace_query(template_url, curPage=1, start=0)
+    first_payload = _fetch_json(session, first_url)
+    first_data = first_payload.get('data') or {}
+    total_count = int(first_data.get('totalCount') or 0)
+    page_count = int(parse_qs(urlparse(first_url).query).get('pageCount', ['10'])[0] or 10)
+    if page_count <= 0:
+        page_count = 10
+
+    total_pages = max(1, (total_count + page_count - 1) // page_count)
+    if max_pages and max_pages > 0:
+        total_pages = min(total_pages, max_pages)
+
+    all_items = []
+    seen = set()
+    api_pages = []
+
+    for page_no in range(1, total_pages + 1):
+        start = (page_no - 1) * page_count
+        page_url = first_url if page_no == 1 else _replace_query(template_url, curPage=page_no, start=start)
+        payload = first_payload if page_no == 1 else _fetch_json(session, page_url)
+        items = _extract_items_from_payload(page_url, payload, entity_type)
+        for item in items:
+            sig = item.get('item_id')
+            if not sig or sig in seen:
+                continue
+            seen.add(sig)
+            all_items.append(item)
+        api_pages.append({'page_no': page_no, 'url': page_url, 'count': len(items)})
+
+    return all_items, api_pages
 
 
 def _crawl_entry(context, list_url, entity_type, save_html=None):
